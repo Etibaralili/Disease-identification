@@ -1,0 +1,520 @@
+---
+title: "Final model"
+author: "Etibar Aliyev"
+date: "4/24/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Packages**   
+```{r cars}
+library("dplyr")
+library("naniar")
+library(magrittr)
+library("car")
+library("caret")
+library("tidyverse")
+library(broom)
+theme_set(theme_classic())
+library(pROC)
+library("ROCR")
+
+```
+
+**Read data**    
+```{r}
+diabetic <- read.csv(file="diabetic.csv", header=T, na.strings = "?")
+diabetic2 <- subset(diabetic, select=-c(weight,payer_code))
+```
+
+#Recoding
+#Early readmission variable
+```{r}
+diabetic2 %<>%
+mutate(early.readmit=case_when(
+ readmitted  %in% "<30" ~ 1,
+ readmitted %in% c(">30","NO") ~ 0 ))
+```
+
+#Create new HbA1c variable
+```{r}
+
+diabetic2$HbA1c <- ifelse(diabetic$A1Cresult == "None","None",
+ifelse(diabetic$A1Cresult == '>8' & diabetic2$change == 'Ch','High-change',      ifelse(diabetic$A1Cresult == '>8' & diabetic2$change == 'No','High-no change',   ifelse(diabetic$A1Cresult == '>7' | diabetic2$A1Cresult == 'Norm','Normal',0))))
+```
+
+
+#Gender
+```{r}
+diabetic2 %<>% replace_with_na(replace = list(gender = "Unknown/Invalid"))
+
+```
+
+
+
+#Discharge disposition
+```{r}
+
+diabetic2 %<>%
+mutate(discharge_disposition=case_when(
+ discharge_disposition_id %in% 1 ~ "Discharged to home",
+ discharge_disposition_id %in% 2:29 ~ "Otherwise" ))
+```
+
+
+#Admission source 
+```{r}
+
+
+diabetic2 %<>%
+mutate(admission.source=case_when(
+ admission_source_id %in% c(7) ~ "Emergency",
+ admission_source_id %in% c(1,2) ~ "Physician/Clinic",
+ admission_source_id %in% c(3:6,8:26) ~ "Otherwise"
+))
+
+```
+
+
+
+#Admitting physician specialty
+```{r}
+
+diabetic2$admit.spec <- 
+ifelse(is.na(diabetic2$medical_specialty), "Unknown",
+ifelse(diabetic2$medical_specialty == "InternalMedicine","IntMed",
+ifelse(diabetic$medical_specialty == 'Cardiology','Card',      ifelse(startsWith(as.character(diabetic2$medical_specialty), "Surg"),'Surg',   ifelse(diabetic2$medical_specialty == 'Family/GeneralPractice','F-GP', 'Other')))))
+
+```
+
+
+#Primary diagnosis
+```{r}
+
+diabetic2$prim.diag <- ifelse(diabetic2$diag_1>=390 &                                                             diabetic2$diag_1<=459 |      
+                              diabetic2$diag_1==785,   
+                              "Circulatory",
+                       ifelse(diabetic2$diag_1>=460 &  
+                              diabetic2$diag_1<=519 |  
+                              diabetic2$diag_1==786, 
+                              "Respiratory",        
+                       ifelse(diabetic2$diag_1>=520 &  
+                              diabetic2$diag_1<=579 | 
+                              diabetic2$diag_1==787, 
+                              "Digestive",   
+                       ifelse(diabetic2$diag_1>=250.0 & 
+                              diabetic2$diag_1<251.0, 
+                              "Diabetes",
+                       ifelse(diabetic2$diag_1>=800 & 
+                              diabetic2$diag_1<=999, 
+                              "Injury",
+                       ifelse(diabetic2$diag_1>=710 & 
+                              diabetic2$diag_1<=739, 
+                              "Musculoskeletal",      
+                       ifelse(diabetic2$diag_1>=580 & 
+                              diabetic2$diag_1<=629 | 
+                              diabetic2$diag_1==788, 
+                              "Genitourinary",          
+                       ifelse(diabetic2$diag_1>=140 & 
+                              diabetic2$diag_1<=239, 
+                              "Neoplasms", "Other"))))))))
+View(diabetic2$prim.diag)
+```
+
+#Race
+```{r}
+
+diabetic2 %<>%
+mutate(race2=case_when(
+ race %in% c("AfricanAmerican")~"AfricanAmerican" ,
+ race %in% c("Caucasian")~"Caucasian" ,
+ race %in% c("Asian","Hispanic","Other")~"Other" ,
+ is.na(race)~"Missing"
+))
+
+```
+
+#Age
+```{r}
+diabetic2 %<>%
+mutate(age3=case_when(
+ age %in% c("[0-10)","[10-20)","[20-30)")~"30 years old or younger" ,
+ age %in% c("[30-40)","[40-50)","[50-60)")~"30 years old to 60 years old" ,
+ age %in% c("[60-70)","[70-80)","[80-90)","[90-100)")~"60 years old or older" 
+))
+
+
+```
+
+
+#Create numeric Age variable
+```{r}
+diabetic2 %<>%
+mutate(age.num=case_when(
+ age %in% c("[0-10)")~5 ,
+ age %in% c("[10-20)")~15 ,
+ age %in% c("[20-30)")~25 ,
+ age %in% c("[30-40)")~35 ,
+ age %in% c("[40-50)")~45 ,
+ age %in% c("[50-60)")~55 ,
+ age %in% c("[60-70)")~65 , 
+ age %in% c("[70-80)")~75 ,
+ age %in% c("[80-90)")~85 ,
+ age %in% c("[90-100)")~95
+))       
+
+```
+
+#Drop observations
+Select first patient visit if multiple visits: Results in 71518 observations.
+```{r}
+diabetic.unique <- distinct(diabetic2, patient_nbr, .keep_all= TRUE)
+
+```
+
+
+#Remove patients discharged to hospice: Results in 70198 observations
+```{r}
+diabetic.unique2 <- subset(diabetic.unique, discharge_disposition_id != 13)
+diabetic.unique3 <- subset(diabetic.unique2, discharge_disposition_id!=14)
+```
+
+
+#Remove patients who died: Results in 69973 observations.
+```{r}
+diabetic.unique4 <- subset(diabetic.unique3, discharge_disposition_id!=11)
+
+diabetic.unique5 <- subset(diabetic.unique4, discharge_disposition_id!=19)
+
+diabetic.unique6 <- subset(diabetic.unique5, discharge_disposition_id!=20)
+
+diabetic.unique7 <- subset(diabetic.unique6, discharge_disposition_id!=21)
+
+```
+
+**Logistic regression diagnostics**
+
+
+#Descriptives: Table: Checking class bias
+```{r}
+table(diabetic.unique7$early.readmit)
+
+```
+#Clearly there is a class bias
+
+
+
+#glm w/o training, testing split
+```{r}
+diabetic.unique7$prim.diag <- relevel(factor(diabetic.unique7$prim.diag), ref='Diabetes')
+
+glm1 <- glm(early.readmit~discharge_disposition_id+admission_source_id+
+                              admit.spec+prim.diag+race2+age3+time_in_hospital+HbA1c+ 
+                              discharge_disposition:admit.spec+
+                              discharge_disposition:prim.diag+
+                              discharge_disposition:race2+
+                              discharge_disposition:time_in_hospital+
+                              admission.source:age3+
+                              admit.spec:age3+
+                              admit.spec:prim.diag+   
+                              admit.spec:time_in_hospital+
+                              prim.diag:time_in_hospital+
+                              HbA1c:prim.diag, 
+                     diabetic.unique7, family = binomial, na.action= na.exclude)
+summary(glm1)
+```
+***Based on p-values I decided to continue with above given model as the results prove that these interactions are statistically significant (Discharge * Race, Discharge * Medical_speciality, Discharge * time_in_hospital, Discharge * Diagnosis, Race * Diagnosis, Admission * medical_speciality, Admission * Age, Admission * Diagnosis, Medical_speciality * time_in_hospital, Medical_speciality * age, Medical_speciality * Diagnosis, Time_in_hospital * Diagnosis).*** 
+
+#Brief interpretation of variables:
+#One unit change in positive estimates will result in increase of log odds of early readmit given that p-values are statistically significant. Conversely negative estimates will decrease the log odds of early readmit provided that p-values are within significance level. 
+
+#The difference between Null and residual deviance clearly proves that the model is good fit. Greater the difference the better model we have as null model takes only early.readmit against null value, residual one takes early readmit against all variables. 
+
+
+#It is important to mention that not all outliers are influential observations. The standardized residual error might be useful to detect whether the data contains potential influential observations. Data points with an absolute standardized residuals above 3 represent possible outliers and may deserve closer attention.
+
+**Outlier detection**
+```{r}
+plot(glm1, which = 4, id.n = 3)
+
+```
+
+```{r}
+# Extract model results
+model.data <- augment(glm1, na.action=na.exclude) %>% 
+  mutate(index = 1:n()) 
+```
+
+#The data for the top 3 largest values, according to the Cook’s distance, can be displayed as follow
+```{r}
+model.data %>% top_n(3, .cooksd)
+
+```
+
+
+#Plotting the standardized residuals. 
+```{r}
+
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = early.readmit), alpha = .5) +
+  theme_bw()
+```
+
+```{r}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+
+```
+
+#If we consider standardized residuals in range (-3, 3) we will find out that according to the plot and the filter only one point is above 3. Previously given cook's distance was visually showing only 1 point as well. Additionally, the scale of this 1 point is around 0.008 which is quite lower. Therefore, based on argumentation one can claim that given point is not  influential.   
+
+**Multicollinearity**
+```{r}
+car::vif(glm1)
+
+
+```
+#As a rule of thumb, a VIF value that exceeds 5 or 10 indicates a problematic amount of collinearity. In our example, there is no collinearity: all variables have a value of VIF well below 10.
+
+```{r}
+
+glm.probs <- predict(glm1, type = "response")
+
+```
+
+
+```{r}
+roc1 <- roc(early.readmit ~glm.probs, diabetic.unique7)
+plot.roc(roc1, legacy.axes = T)
+abline(v=1)
+```
+#As per general rule if the curve gets closer to 45-degree diagonal of the ROC space it means that test is less accurate. 
+#In this plot we can visually identify that curve is not in good position.
+
+```{r}
+auc(roc1)
+```
+#AUC is good metrics to summarize the performance of each classifier. Here it is esentially equivalent to probability that a randomly chosen positive instance is ranked higher than a randomly chosen negative instance. AUC is approximately equal to 62% which is not quite good result. Therefore, there is a need to try different models and compare the results. 
+
+
+
+
+```{r}
+# Split the data into training and test set
+set.seed(123)
+training.samples <- diabetic.unique7$early.readmit%>%
+  createDataPartition(p = 0.5, list = FALSE)
+train.data  <- diabetic.unique7[training.samples, ]
+test.data <- diabetic.unique7[-training.samples, ]
+# Build the model
+model <- glm(early.readmit~discharge_disposition+admission.source+
+                              admit.spec+prim.diag+race2+age3+time_in_hospital+HbA1c+ 
+                              discharge_disposition:admit.spec+
+                              discharge_disposition:prim.diag+
+                              discharge_disposition:race2+
+                              discharge_disposition:time_in_hospital+
+                              admission.source:age3+
+                              admit.spec:age3+
+                              admit.spec:prim.diag+   
+                              admit.spec:time_in_hospital+
+                              prim.diag:time_in_hospital+
+                              HbA1c:prim.diag, 
+                     train.data, family = binomial, na.action = na.exclude)
+# Make predictions and compute the R2, RMSE and MAE
+predictions <- model %>% predict(test.data)
+
+data.frame( R2 = R2(predictions, test.data$early.readmit, na.rm = TRUE),
+            RMSE = RMSE(predictions, test.data$early.readmit,na.rm = TRUE),
+            MAE = MAE(predictions, test.data$early.readmit, na.rm = TRUE))
+
+```
+#The coefficients table clearly shows that how variables change in glm model. Apparently, positive coefficients will increase log odds of early readmit  which means that higher values in these variables are indicative of early readmission.
+#AIC should not be good metrics to compare the model as the number of variables is less compared to the first model. However, generally lower AIC means better result. 
+
+#Checking prediction error rate based on RMSE.
+```{r}
+
+RMSE(predictions, test.data$early.readmit, na.rm = TRUE)/mean(test.data$early.readmit, na.rm = TRUE)
+
+```
+#Error is quite high. Apparently, the model is built on a fraction of the data set only. That's why there is a still possiblity that some important information might not be included, which essentially leads to higher bias. The test error rate can be greatly variable, depending on which observations are included in the training set and which observations are included in the validation set. 
+#That's why subsequently I will try to make a new model by means of cross validation in order to compare the results.
+
+
+```{r}
+roc1 <- roc(early.readmit ~predictions, test.data, na.rm = TRUE)
+plot.roc(roc1, legacy.axes = T)
+abline(v=1)
+
+```
+
+```{r}
+auc(roc1)
+
+```
+#The reason why AUC is getting lower is related to the number of variables used in the prediction. AUC result is still not good. 
+
+#ggplot shows the change of early readmit per age group 
+```{r}
+
+fun.gen <- function(awd) exp(model$coef[1] + model$coef[2] * awd)
+fun.acd <- function(awd) exp(model$coef[1] + model$coef[2] * awd + model$coef[3])
+fun.voc <- function(awd) exp(model$coef[1] + model$coef[2] * awd + model$coef[4])
+
+ggplot(train.data, aes(HbA1c, early.readmit, col = age3)) +
+    geom_point() +
+    stat_function(fun = fun.gen, col = "red") +
+    stat_function(fun = fun.acd, col = "green") +
+    stat_function(fun = fun.voc, col = "blue") +
+    geom_smooth(method = "glm", se = F, 
+        method.args = list(family = "poisson"), linetype = "dashed")
+
+
+```
+
+#ggplot shows the change of early readmit per race 
+```{r}
+
+fun.gen <- function(awd) exp(model$coef[1] + model$coef[2] * awd)
+fun.acd <- function(awd) exp(model$coef[1] + model$coef[2] * awd + model$coef[3])
+fun.voc <- function(awd) exp(model$coef[1] + model$coef[2] * awd + model$coef[4])
+
+ggplot(train.data, aes(HbA1c, early.readmit, col = race2)) +
+    geom_point() +
+    stat_function(fun = fun.gen, col = "red") +
+    stat_function(fun = fun.acd, col = "green") +
+    stat_function(fun = fun.voc, col = "blue") +
+    geom_smooth(method = "glm", se = F, 
+        method.args = list(family = "poisson"), linetype = "dashed")
+
+
+```
+
+#Cross validation (5 folds).
+```{r}
+# Define training control
+final_ctrl <- trainControl(method = "cv", number = 5)
+model_caret1 <- train(early.readmit~discharge_disposition+admission.source+
+                              admit.spec+prim.diag+race2+age3+time_in_hospital+HbA1c+ 
+                              discharge_disposition:admit.spec+
+                              discharge_disposition:prim.diag+
+                              discharge_disposition:race2+
+                              discharge_disposition:time_in_hospital+
+                              admission.source:age3+
+                              admit.spec:age3+
+                              admit.spec:prim.diag+   
+                              admit.spec:time_in_hospital+
+                              prim.diag:time_in_hospital+
+                              HbA1c:prim.diag,
+                  data=diabetic.unique7,trControl = final_ctrl,              
+                     method = "glm", na.action = na.exclude)
+
+print(model_caret1)
+       
+```
+
+#Cross validation (10 folds).
+```{r}
+# Define training control
+final_ctrl1 <- trainControl(method = "cv", number = 10)
+model_caret11 <- train(early.readmit~discharge_disposition+admission.source+
+                              admit.spec+prim.diag+race2+age3+time_in_hospital+HbA1c+ 
+                              discharge_disposition:admit.spec+
+                              discharge_disposition:prim.diag+
+                              discharge_disposition:race2+
+                              discharge_disposition:time_in_hospital+
+                              admission.source:age3+
+                              admit.spec:age3+
+                              admit.spec:prim.diag+   
+                              admit.spec:time_in_hospital+
+                              prim.diag:time_in_hospital+
+                              HbA1c:prim.diag,
+                  data=diabetic.unique7,trControl = final_ctrl1,              
+                     method = "glm", na.action = na.exclude)
+
+print(model_caret11)
+       
+```
+
+#According to above-given results our RMSE is getting smaller, R-squared is getting higher as the number of folds is going up which necessarily means that 10 cross-validations increase the goodness of fit. 
+#By this method we use all data points reducing potential bias. 
+#However, the process is repeated as many times as there are data points. 
+#It clearly results in a higher execution time especially when we have big data.
+
+
+#Examining model predictions for each fold after resampling (5cv-s).
+```{r}
+model_caret1$resample
+
+```
+
+#Checking the standard deviation around the Rsquared value by examining the R-squared from each fold (5cv-s).
+```{r}
+sd(model_caret1$resample$Rsquared)
+
+```
+
+#Examining model predictions for each fold after resampling (10 cv-s).
+```{r}
+model_caret11$resample
+
+```
+
+#Checking the standard deviation around the Rsquared value by examining the R-squared from each fold (10cv-s).
+```{r}
+
+sd(model_caret11$resample$Rsquared)
+
+```
+
+#Interestingly, resampling changes the results as well. Depending on the numbers of folds my model gets different results.
+#Based on RMSE, R-squared and standard deviation it can be said that resampling affects overall results. 
+#Before resampling 10 cv-s have much more better results. Conversely, after resampling 5cv-s give better results.
+#It reinforces the idea that randomness is essential in order to get better results. In this vein, 5cv-s are good to create more randomness. 
+
+#Moreover, the model checks the performance and tests it against one data point iteratively.  
+#From this point, higher variation in the prediction error is inevitable in case some data points are outliers.
+#Therefore, k-fold cv method might be better option as the model is based on random splits.
+
+
+```{r}
+diabetic.unique7$prim.diag <- relevel(factor(diabetic.unique7$prim.diag), ref='Diabetes')
+
+
+# Define training control
+set.seed(123)
+train.control1 <- trainControl(method = "repeatedcv", 
+                              number = 10, repeats = 3)
+
+diabetic.unique7$medical_specialty <- as.numeric(diabetic.unique7$medical_specialty,  na.action = na.exclude)
+diabetic.unique7$medical_specialty[is.na(diabetic.unique7$medical_specialty)] = mean(diabetic.unique7$medical_specialty,  na.action = na.exclude)
+
+# Train the model
+model <- train(early.readmit ~discharge_disposition+admission.source+
+                              admit.spec+prim.diag+race2+age3+time_in_hospital+HbA1c+ 
+                              discharge_disposition:admit.spec+
+                              discharge_disposition:prim.diag+
+                              discharge_disposition:race2+
+                              discharge_disposition:time_in_hospital+
+                              admission.source:age3+
+                              admit.spec:age3+
+                              admit.spec:prim.diag+   
+                              admit.spec:time_in_hospital+
+                              prim.diag:time_in_hospital+
+                              HbA1c:prim.diag, data = diabetic.unique7, method = "glm",
+               trControl = train.control1, na.action = na.exclude)
+# Summarize the results
+print(model)
+
+
+```
+#Based on RMSE it can be said that K-fold cv method is much more better than previous methods. Having said that execution time is higher it still holds the best results. 
+
+
+
+

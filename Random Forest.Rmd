@@ -1,0 +1,294 @@
+---
+title: "Random Forest"
+author: "Etibar Aliyev"
+date: "4/26/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Packages**   
+```{r cars}
+library("dplyr")
+library("naniar")
+library(magrittr)
+library("car")
+library("caret")
+library("tidyverse")
+library(broom)
+theme_set(theme_classic())
+library(pROC)
+library("ROCR")
+library(mlbench)
+library(caret)
+library(randomForest)
+require(caTools)
+```
+
+**Read data**    
+```{r}
+diabetic <- read.csv(file="diabetic.csv", header=T, na.strings = "?")
+diabetic2 <- subset(diabetic, select=-c(weight,payer_code))
+```
+
+
+#Early readmission variable
+```{r}
+diabetic2 %<>%
+mutate(early.readmit=case_when(
+ readmitted  %in% "<30" ~ 1,
+ readmitted %in% c(">30","NO") ~ 0 ))
+```
+
+#Create new HbA1c variable
+```{r}
+
+diabetic2$HbA1c <- ifelse(diabetic$A1Cresult == "None","None",
+ifelse(diabetic$A1Cresult == '>8' & diabetic2$change == 'Ch','High-change',      ifelse(diabetic$A1Cresult == '>8' & diabetic2$change == 'No','High-no change',   ifelse(diabetic$A1Cresult == '>7' | diabetic2$A1Cresult == 'Norm','Normal',0))))
+```
+
+
+#Gender
+```{r}
+diabetic2 %<>% replace_with_na(replace = list(gender = "Unknown/Invalid"))
+
+```
+
+
+
+#Discharge disposition
+```{r}
+
+diabetic2 %<>%
+mutate(discharge_disposition=case_when(
+ discharge_disposition_id %in% 1 ~ "Discharged to home",
+ discharge_disposition_id %in% 2:29 ~ "Otherwise" ))
+```
+
+
+#Admission source 
+```{r}
+
+
+diabetic2 %<>%
+mutate(admission.source=case_when(
+ admission_source_id %in% c(7) ~ "Emergency",
+ admission_source_id %in% c(1,2) ~ "Physician/Clinic",
+ admission_source_id %in% c(3:6,8:26) ~ "Otherwise"
+))
+
+```
+
+
+
+#Admitting physician specialty
+```{r}
+
+diabetic2$admit.spec <- 
+ifelse(is.na(diabetic2$medical_specialty), "Unknown",
+ifelse(diabetic2$medical_specialty == "InternalMedicine","IntMed",
+ifelse(diabetic$medical_specialty == 'Cardiology','Card',      ifelse(startsWith(as.character(diabetic2$medical_specialty), "Surg"),'Surg',   ifelse(diabetic2$medical_specialty == 'Family/GeneralPractice','F-GP', 'Other')))))
+
+```
+
+
+#Primary diagnosis
+```{r}
+
+diabetic2$prim.diag <- ifelse(diabetic2$diag_1>=390 &                                                             diabetic2$diag_1<=459 |      
+                              diabetic2$diag_1==785,   
+                              "Circulatory",
+                       ifelse(diabetic2$diag_1>=460 &  
+                              diabetic2$diag_1<=519 |  
+                              diabetic2$diag_1==786, 
+                              "Respiratory",        
+                       ifelse(diabetic2$diag_1>=520 &  
+                              diabetic2$diag_1<=579 | 
+                              diabetic2$diag_1==787, 
+                              "Digestive",   
+                       ifelse(diabetic2$diag_1>=250.0 & 
+                              diabetic2$diag_1<251.0, 
+                              "Diabetes",
+                       ifelse(diabetic2$diag_1>=800 & 
+                              diabetic2$diag_1<=999, 
+                              "Injury",
+                       ifelse(diabetic2$diag_1>=710 & 
+                              diabetic2$diag_1<=739, 
+                              "Musculoskeletal",      
+                       ifelse(diabetic2$diag_1>=580 & 
+                              diabetic2$diag_1<=629 | 
+                              diabetic2$diag_1==788, 
+                              "Genitourinary",          
+                       ifelse(diabetic2$diag_1>=140 & 
+                              diabetic2$diag_1<=239, 
+                              "Neoplasms", "Other"))))))))
+View(diabetic2$prim.diag)
+```
+
+#Race
+```{r}
+
+diabetic2 %<>%
+mutate(race2=case_when(
+ race %in% c("AfricanAmerican")~"AfricanAmerican" ,
+ race %in% c("Caucasian")~"Caucasian" ,
+ race %in% c("Asian","Hispanic","Other")~"Other" ,
+ is.na(race)~"Missing"
+))
+
+```
+
+#Age
+```{r}
+diabetic2 %<>%
+mutate(age3=case_when(
+ age %in% c("[0-10)","[10-20)","[20-30)")~"30 years old or younger" ,
+ age %in% c("[30-40)","[40-50)","[50-60)")~"30 years old to 60 years old" ,
+ age %in% c("[60-70)","[70-80)","[80-90)","[90-100)")~"60 years old or older" 
+))
+
+
+```
+
+
+#Create numeric Age variable
+```{r}
+diabetic2 %<>%
+mutate(age.num=case_when(
+ age %in% c("[0-10)")~5 ,
+ age %in% c("[10-20)")~15 ,
+ age %in% c("[20-30)")~25 ,
+ age %in% c("[30-40)")~35 ,
+ age %in% c("[40-50)")~45 ,
+ age %in% c("[50-60)")~55 ,
+ age %in% c("[60-70)")~65 , 
+ age %in% c("[70-80)")~75 ,
+ age %in% c("[80-90)")~85 ,
+ age %in% c("[90-100)")~95
+))       
+
+```
+
+#Drop observations
+Select first patient visit if multiple visits: Results in 71518 observations.
+```{r}
+diabetic.unique <- distinct(diabetic2, patient_nbr, .keep_all= TRUE)
+
+```
+
+
+#Remove patients discharged to hospice: Results in 70198 observations
+```{r}
+diabetic.unique2 <- subset(diabetic.unique, discharge_disposition_id != 13)
+diabetic.unique3 <- subset(diabetic.unique2, discharge_disposition_id!=14)
+```
+
+
+#Remove patients who died: Results in 69973 observations.
+```{r}
+diabetic.unique4 <- subset(diabetic.unique3, discharge_disposition_id!=11)
+
+diabetic.unique5 <- subset(diabetic.unique4, discharge_disposition_id!=19)
+
+diabetic.unique6 <- subset(diabetic.unique5, discharge_disposition_id!=20)
+
+diabetic.unique7 <- subset(diabetic.unique6, discharge_disposition_id!=21)
+
+```
+
+
+#Before running random forest transforming variables into factor and numeric variable as per na.action = na.roughfix requirement
+
+```{r}
+
+diabetic.unique7 <- transform(
+  diabetic.unique7,
+  early.readmit = as.factor(early.readmit),
+  discharge_disposition_id = as.factor(discharge_disposition_id),
+  admission_source_id =as.factor(admission_source_id),
+  medical_specialty = as.factor(medical_specialty),
+  age = as.factor(age),
+  HbA1c=as.factor(HbA1c),
+  diag_1 = as.numeric(diag_1),
+  race = as.factor(race),
+  admit.spec = as.factor(admit.spec),
+  prim.diag = as.factor(prim.diag)
+  )
+
+
+
+sapply(diabetic.unique7, class)
+
+```
+
+
+#Creating train, test subsets
+```{r}
+
+sample = sample.split(diabetic.unique7$early.readmit, SplitRatio = .75)
+train = subset(diabetic.unique7, sample == TRUE)
+test  = subset(diabetic.unique7, sample == FALSE)
+
+```
+
+```{r}
+dim(train)
+dim(test)
+
+```
+
+
+#Running random forest and prediction
+```{r}
+rf <- randomForest(
+  early.readmit ~ discharge_disposition_id +  admit.spec+ race + prim.diag+
+          admission_source_id + time_in_hospital + age.num + HbA1c,data=train,na.action= na.roughfix
+)
+
+pred = predict(rf, newdata=test[-49])
+cm = table(test[,49], pred)
+print(cm)
+```
+
+```{r}
+confusionMatrix(pred, test$early.readmit)
+```
+#Our accuracy is aroung 90% which is quite good result.
+
+#Checking class error
+```{r}
+
+rf$confusion[, 'class.error']
+
+```
+#99% early readmitted
+
+#Variable importance
+```{r}
+# estimate variable importance
+importance <- varImp(rf, scale=FALSE)
+# summarize importance
+print(importance)
+
+```
+
+#Plotting variable importance
+```{r}
+
+varImpPlot(rf,type=2)
+
+```
+#Above given results and plot show that the most 3 important variables are time_in_hospital, discharge_disposition_id and prim diag.
+
+In conclusion, as a result of comparison between 2 models random forest model proved to be quite robust in terms of results as well as fault-tolerant functionality. Considering the fact that K-fold cv method creates randomness it can also be used to compute results.   
+
+
+
+
+
+
+
+
+
